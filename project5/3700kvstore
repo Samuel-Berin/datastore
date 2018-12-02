@@ -13,10 +13,165 @@ replica_ids = sys.argv[2:]
 sock = socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET)
 sock.connect(my_id)
 
-last = 0
-mid_num = 1
+last_heartbeat = time.time()
 
+
+# The current term
+current_term = 0
+# Who you are voting for
+# None if there is not currently an election
+# If it's non None and there's no election,
+# that's the leader
+voted_for = None
+
+# The number of votes for me to be leader this
+# election cycle
+votes_for_me = 0
+# Log of all messages
+log = []
+
+commit_index = 0
+last_applied = 0
+
+# True if you are currently the leader
+is_leader = False
+
+
+def send_heartbeat():
+	send_append_entries([])
+
+def send_append_entries(entries):
+	msg = {
+		'src': my_id,
+		'dst': 'FFFF',
+		'type': 'append',
+		'leader': my_id,
+		'term': current_term,
+		'prev_log_index': len(log) - 1,
+		'prev_log_term': log[len(log) - 1],
+		'entries': entries,
+		'leader_commit': commit_index
+	}
+	sock.send(json.dumps(msg))
+
+
+def recieve_append_entries(leader_term, leader_id, prev_log_index, prev_log_term, entries_to_add, leader_commit):
+
+	if current_term > leader_term:
+		return [current_term, False]
+
+	if log[prev_log_index] is not prev_log_term:
+		return [current_term, False]
+
+
+	#TODO: Optimize
+	index = 1
+	for entry in entries_to_add:
+		entry_in_local_log = None
+		try:
+			entry_in_local_log = log[prev_log_index + index]
+		except:
+			# That spot in the log is empty
+			5
+		# If an existing entry conflicts with a new one
+		# truncate the list
+		if entry_in_local_log is not entry:
+			log = log[:prev_log_index + 1]
+
+		# Append into the log
+		log.append(entry)
+		index += 1
+
+	# Update our committed index
+	if leader_commit > commit_index:
+		commit_index =  min(leader_commit, len(log) -1)
+
+
+	return [current_term, True]
+
+# Starts an election from this machine
+def start_election():
+	current_term += 1
+	voted_for = my_id
+	votes_for_me = 0
+	last_heartbeat = time.time()
+	send_vote_request()
+
+
+# Sends a request to all other machines to vote
+# for this machine for leader
+def send_vote_request():
+	req = {
+		'src': my_id,
+		'dst': 'FFFF',
+		'leader': 'FFFF',
+		'type': 'election',
+		'term': current_term,
+		'last_log_index': len(log) - 1,
+		'last_log_term': log[len(log) - 1]
+	}
+	sock.send(json.dumps(req))
+
+
+# Handles recieving a vote for a new leader
+def recieve_vote_request(candidate_term, candidate_id, last_log_index, last_log_term):
+	if candidate_term < current_term:
+		return [current_term, False]
+	else:
+		candidate_available = voted_for == None or voted_for == candidate_id
+		log_up_to_date = last_log_index >= len(log) - 1
+		if candidate_available and log_up_to_date:
+			voted_for = candidate_id
+			return [current_term, True]
+		else:
+			return [current_term, False]
+
+
+# Sends a response back to the person we've
+# recieved a vote request from
+def send_vote_response(vote_results, destination):
+	req = {
+		'src': my_id,
+		'dst': destination,
+		'leader': 'FFFF',
+		'type': 'election_vote',
+		'term': vote_results[0],
+		'vote_granted': vote_results[1]
+	}
+	sock.send(json.dumps(req))
+
+# Recieves a vote for this election
+def recieve_vote_response(term, voted_for_me):
+	# If the vote is for a previous term, ignore it
+	if term == current_term:
+		if voted_for_me:
+			votes_for_me += 1
+
+		votes_needed = ((len(replica_ids) + 1) / 2) + 1
+		# If you have enough votes, seize power
+		if votes_for_me >= votes_needed:
+			is_leader = True
+			voted_for = None
+			send_heartbeat()
+
+# Main loop
 while True:
+	time_since_last_heartbeat = time.time() - last_heartbeat
+	time_since_in_ms = time_since_last_heartbeat * 1000
+
+	if is_leader and time_since_in_ms > 100:
+		send_heartbeat()
+
+	else if not is_leader:
+
+		threshold = randint(0, 150)
+		threshold += 150
+
+		# If you are a follower, wait 150-300ms before starting
+		# elections
+		if threshold < time_since_in_ms:
+			start_election()
+
 	ready = select.select([sock], [], [], 0.1)[0]
 
 	if sock in ready:
@@ -25,18 +180,48 @@ while True:
 		if len(msg_raw) == 0: continue
 		msg = json.loads(msg_raw)
 
+		if msg['type'] == 'append':
+			leader_term = msg['term']
+			leader_id = msg['leader']
+			prev_log_index = msg['prev_log_index']
+			prev_log_term = msg['prev_log_term']
+			entries = msg['entries']
+			leader_commit = msg['leader_commit']
+			response = recieve_append_entries(leader_term, leader_id, prev_log_index, prev_log_term, entries, leader_commit)
+
 		# For now, ignore get() and put() from clients
 		if msg['type'] in ['get', 'put']:
-			mid_num += 1
-			print(msg)
-			new_msg = {
-				'src': my_id,
-				'dst': msg['src'],
-				'leader': '0001',
-				'type': 'fail',
-				'MID': msg['MID'],
-			}
-			sock.send(json.dumps(new_msg))
+
+			#Redirect if a follower recieves the request
+			if not is_leader:
+				new_msg = {
+					'src': my_id,
+					'dst': msg['src'],
+					'leader': voted_for,
+					'type': 'redirect',
+					'MID': msg['MID'],
+					}
+				sock.send(json.dumps(new_msg))
+
+		# You just got a vote request for a new leader
+		if msg['type'] == 'election':
+			candidate_term = msg['term']
+			candidate_id = msg['src']
+			last_log_index = msg['last_log_index']
+			last_log_term = msg['last_log_term']
+			resp = recieve_vote_request(candidate_term, candidate_id, last_log_index, last_log_term)
+			send_vote_response(resp, candidate_id)
+
+		# You just got a vote response, possibly voting for you!
+		if msg['type'] == 'election_vote':
+			term = msg['term']
+			voted_for_me = msg['vote_granted']
+			recieve_vote_response(term, voted_for_me)
+
+
+
+
+			
 		# Handle noop messages. This may be removed from your final implementation
 		#elif msg['type'] == 'noop':
 			#print '%s received a NOOP from %s' % (msg['dst'], msg['src'])
