@@ -13,7 +13,7 @@ replica_ids = sys.argv[2:]
 sock = socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET)
 sock.connect(my_id)
 
-last_heartbeat = time.time()
+last_heartbeat = [time.time()] * len(replica_ids)
 
 
 # The current term
@@ -38,11 +38,14 @@ last_applied = 0
 # True if you are currently the leader
 is_leader = False
 
+next_index = [1] * len(replica_ids)
+last_match = [0] * len(replica_ids)
+
 
 def send_heartbeat():
-	send_append_entries([])
+	send_append_entries([], 'FFFF')
 
-def send_append_entries(entries):
+def send_append_entries(entries, dest):
 	prev_log_index = len(log) - 1
 	prev_log_term = None
 	if prev_log_index is not -1:
@@ -50,7 +53,7 @@ def send_append_entries(entries):
 
 	msg = {
 		'src': my_id,
-		'dst': 'FFFF',
+		'dst': dest,
 		'type': 'append',
 		'leader': my_id,
 		'term': current_term,
@@ -63,7 +66,7 @@ def send_append_entries(entries):
 
 
 def recieve_append_entries(leader_term, leader_id, prev_log_index, prev_log_term, entries_to_add, leader_commit):
-	global log, commit_index, voted_for
+	global log, commit_index, voted_for, current_term
 
 	if current_term > leader_term:
 		return [current_term, False]
@@ -71,6 +74,9 @@ def recieve_append_entries(leader_term, leader_id, prev_log_index, prev_log_term
 	if log[prev_log_index] is not prev_log_term:
 		return [current_term, False]
 
+
+	if leader_term > current_term:
+		current_term = leader_term
 
 	# Make sure you know who the leader is
 	voted_for = leader_id
@@ -101,7 +107,7 @@ def recieve_append_entries(leader_term, leader_id, prev_log_index, prev_log_term
 	return [current_term, True]
 
 # Handle the response from an append
-def recieve_append_response(resp):
+def recieve_append_response(resp, src_id):
 	global current_term, voted_for, is_leader
 	# If my term is behind the response term, update mine
 	# and relinquish leadership
@@ -109,6 +115,22 @@ def recieve_append_response(resp):
 		current_term = resp[0]
 		voted_for = None
 		is_leader = False
+
+	replica_index = replica_ids.index(src_id)
+
+	# The append were successful!
+	if resp[1]:
+		next_index = len(log)
+		last_match[replica_index] += 1
+	# The append failed,
+	# let's try again earlier
+	else:
+		next_index[replica_index] -= 1
+
+
+
+def send_append_entries_response(resp):
+
 
 # Starts an election from this machine
 def start_election():
@@ -186,25 +208,80 @@ def recieve_vote_response(term, voted_for_me):
 			print("Election is over: " + str(my_id) + " is leader")
 			send_heartbeat()
 
+# Finds the highest value the majority of the replicas
+# are willing to commit to
+def highest_agreed_match_index():
+	follower_index = 0
+	match_index = 0
+	while follower_index < len(replica_ids):
+		test_val = last_match[follower_index]
+		higher_or_equal_count = 0
+		for match_val in last_match:
+			if match_val >= test_val:
+				higher_or_equal_count += 1
+
+		# More than half of the replicas are ready to move
+		# the commit index forward
+		if higher_or_equal_count > len(replica_ids) / 2:
+			match_index = max(match_index, test_val)
+
+		follower_index += 1
+
+	return match_index
 # Main loop
 while True:
 
-	time_since_last_heartbeat = time.time() - last_heartbeat
-	time_since_in_ms = time_since_last_heartbeat * 1000
 
-	if is_leader and time_since_in_ms > 100:
-		send_heartbeat()
+	# Leader general responsibilities
+	if is_leader:
+
+		follower_index = 0
+		while follower_index < len(replica_ids):
+			replica_id = replica_ids[follower_index]
+
+			time_since_last_heartbeat = time.time() - last_heartbeat[follower_index]
+			time_since_in_ms = time_since_last_heartbeat * 1000
+
+			last_log_index = len(log) - 1
+			next_index_for_follower = next_index[follower_index]
+
+			#Sends logs to followers if necesary
+			if last_log_index >= next_index_for_follower:
+				entries = [next_index_for_follower:]
+				send_append_entries(entries, replica_id)
+				last_heartbeat[follower_index] = time.time()
+			else:
+				# Sends heartbeat if we need it
+				if time_since_in_ms > 100:
+					send_append_entries([], replica_id)
+					last_heartbeat[follower_index] = time.time()
+
+
+		# Increments the commit index if the majority of replicas agree
+		highest_match = highest_agreed_match_index()
+
+		if highest_match > commit_index and log[highest_match][0] is current_term:
+			commit_index = highest_match
 
 	else:
-		if not is_leader:
+		# If this follower is behind the times,
+		# Apply the next log item to the state machine
+		if commit_index > last_applied:
+			last_applied += 1
+			entry = log[last_applied]
+			key = entry[1]
+			val = entry[2]
+			state_machine[key] = val
 
-			threshold = random.randint(0, 300)
-			threshold += 300
+	if not is_leader:
 
-			# If you are a follower, wait 150-300ms before starting
-			# elections
-			if threshold < time_since_in_ms:
-				start_election()
+		threshold = random.randint(0, 300)
+		threshold += 300
+
+		# If you are a follower, wait 150-300ms before starting
+		# elections
+		if threshold < time_since_in_ms:
+			start_election()
 
 	ready = select.select([sock], [], [], 0.1)[0]
 
@@ -222,7 +299,7 @@ while True:
 			entries = msg['entries']
 			leader_commit = msg['leader_commit']
 			response = recieve_append_entries(leader_term, leader_id, prev_log_index, prev_log_term, entries, leader_commit)
-			recieve_append_response(response)
+			send_append_entries_response(response)
 			last_heartbeat = time.time()
 
 		# For now, ignore get() and put() from clients
@@ -263,7 +340,10 @@ while True:
 						}
 					key = msg['key']
 					val = msg['value']
+					# Apply to state machine
 					state_machine[key] = val
+					# Add to log
+					log.append([current_term, key, val])
 					sock.send(json.dumps(ok_msg))
 
 
