@@ -56,6 +56,7 @@ def send_append_entries(entries, dest):
 
 	if prev_log_index > -1:
 		prev_log_term = log[prev_log_index]
+		prev_log_term = [prev_log_term[0], prev_log_term[1], prev_log_term[2]]
 
 	msg = {
 		'src': my_id,
@@ -83,10 +84,6 @@ def recieve_append_entries(leader_term, leader_id, prev_log_index, prev_log_term
 		return [current_term, False, -1]
 
 
-	if entries != []:
-		print entries
-
-
 	# The log is empty
 	# So take entries as the log
 	# If entries is empty, this preserves
@@ -108,8 +105,6 @@ def recieve_append_entries(leader_term, leader_id, prev_log_index, prev_log_term
 	# go back and ask for more logs
 	if log[prev_log_index] != prev_log_term:
 		print("non match")
-		print(prev_log_term)
-		print(log[prev_log_index])
 		return [current_term, False, prev_log_index - 1]
 
 
@@ -187,6 +182,8 @@ def send_vote_request():
 	last_log_term = None
 	if last_log_index is not -1:
 		last_log_term = log[last_log_index]
+		# slim version
+		last_log_term = [last_log_term[0], last_log_term[1], last_log_term[2]]
 	req = {
 		'src': my_id,
 		'dst': 'FFFF',
@@ -278,12 +275,27 @@ def highest_agreed_match_index():
 		follower_index += 1
 
 	return match_index
+
+# Sends a confirmation back if the
+# entry was committed on a quorum of machines
+def send_put_confirmation(dest, mid):
+	ok_msg = {
+		'src': my_id,
+		'dst': dest,
+		'leader': my_id,
+		'type': 'ok',
+		'MID': mid,
+		}
+	sock.send(json.dumps(ok_msg))
+	print("Confirming put: " + str(mid))
+
 # Main loop
 while True:
 
 
 	# Leader general responsibilities
 	if is_leader:
+
 
 		follower_index = 0
 		while follower_index < len(replica_ids):
@@ -296,14 +308,19 @@ while True:
 			next_index_for_follower = next_index[follower_index]
 
 			#Sends logs to followers if necesary
-			if last_log_index >= next_index_for_follower and time_since_in_ms > 1000:
+			if last_log_index >= next_index_for_follower and time_since_in_ms > 100:
 				# Send one log at a time
 				entries = log[next_index_for_follower: next_index_for_follower + 1]
-				send_append_entries(entries, replica_id)
+				slim_entries = []
+				# We don't need the "Confirmed" Flag on follower machines
+				for entry in entries:
+					slim_entry = [entry[0], entry[1], entry[2]]
+					slim_entries.append(slim_entry)
+				send_append_entries(slim_entries, replica_id)
 				last_heartbeat[follower_index] = time.time()
 			else:
 				# Sends heartbeat if we need it
-				if time_since_in_ms > 1000:
+				if time_since_in_ms > 100:
 					send_append_entries([], replica_id)
 					last_heartbeat[follower_index] = time.time()
 
@@ -312,6 +329,14 @@ while True:
 		highest_match = highest_agreed_match_index()
 
 		if highest_match > commit_index and log[highest_match][0] is current_term:
+
+			#Confirm all messages between last commit index and this one
+			to_confirm = log[commit_index + 1: highest_match + 1]
+			for entry in to_confirm:
+				#Actually apply it to the state machine now
+				state_machine[entry[1]] = entry[2]
+				send_put_confirmation(entry[3], entry[4])
+
 			commit_index = highest_match
 
 	else:
@@ -324,13 +349,10 @@ while True:
 			val = entry[2]
 			state_machine[key] = val
 
-	if not is_leader:
-
 		time_since_last_heartbeat = time.time() - last_heartbeat_to_me
 		time_since_in_ms = time_since_last_heartbeat * 1000
 
 		threshold = random.randint(150, 300)
-		threshold += 1000
 
 		# If you are a follower, wait 150-300ms before starting
 		# elections
@@ -403,11 +425,9 @@ while True:
 						}
 					key = msg['key']
 					val = msg['value']
-					# Apply to state machine
-					state_machine[key] = val
+					src = msg['src']
 					# Add to log
-					log.append([current_term, key, val])
-					sock.send(json.dumps(ok_msg))
+					log.append([current_term, key, val, src, msg['MID']])
 
 
 		# You just got a vote request for a new leader
