@@ -19,7 +19,6 @@ last_heartbeat = [time.time()] * len(replica_ids)
 last_heartbeat_to_me = time.time()
 
 
-
 # The current term
 current_term = 0
 # Who you are voting for
@@ -31,24 +30,27 @@ voted_for = None
 # The number of votes for me to be leader this
 # election cycle
 votes_for_me = 0
+
+# True if its election season/ we don't know who the leader is
+election_season = False
 # Log of all messages
 log = []
 
 state_machine = {}
 
-commit_index = 0
+commit_index = -1
 last_applied = 0
 
 
 #timeout time
-time_out_threshold = 100
-election_threshold = 4 * time_out_threshold
+time_out_threshold = 1000
+
 
 # True if you are currently the leader
 is_leader = False
 
 next_index = [0] * len(replica_ids)
-last_match = [0] * len(replica_ids)
+last_match = [-1] * len(replica_ids)
 
 
 def send_heartbeat():
@@ -75,6 +77,7 @@ def send_append_entries(entries, dest):
 		'entries': entries,
 		'leader_commit': commit_index
 	}
+
 	sock.send(json.dumps(msg))
 
 
@@ -89,16 +92,16 @@ def recieve_append_entries(leader_term, leader_id, prev_log_index, prev_log_term
 	# Remember who the leader is
 	voted_for = leader_id
 	is_leader = False
-
-
-
+	current_term = leader_term
 
 	# The log is empty
 	# So take entries as the log
 	# If entries is empty, this preserves
 	# the status quo
 	if prev_log_index <= -1:
-		print("full log replace")
+
+		if log != []:
+			print("full log replace")
 		log = entries
 		return [current_term, True, len(log)]
 
@@ -135,7 +138,7 @@ def recieve_append_response(term, success, nextIndex, src_id):
 	# If my term is behind the response term, update mine
 	# and relinquish leadership and do nothing more
 	if term > current_term:
-		current_term = resp[0]
+		current_term = term
 		voted_for = src_id
 		is_leader = False
 		return
@@ -176,8 +179,10 @@ def send_append_entries_response(resp, dest):
 
 # Starts an election from this machine
 def start_election():
-	global current_term, voted_for, votes_for_me, last_heartbeat_to_me
+	global current_term, voted_for, votes_for_me, last_heartbeat_to_me, election_season
+	election_season = True
 	current_term += 1
+	print (str(my_id) + " starting election for term " + str(current_term))
 	voted_for = my_id
 	votes_for_me = 1
 	last_heartbeat_to_me = time.time()
@@ -223,11 +228,11 @@ def recieve_vote_request(candidate_term, candidate_id, last_log_index, last_log_
 			current_term = candidate_term
 			voted_for = candidate_id
 
-		print(str(my_id) + " Recieved request to vote for " + str(candidate_id) + " in term " + str(current_term) + ", leader: " + str(voted_for))
+		#print(str(my_id) + " Recieved request to vote for " + str(candidate_id) + " in term " + str(current_term) + ", leader: " + str(voted_for))
 		candidate_available = voted_for == None or voted_for == candidate_id
 		log_up_to_date = last_log_index >= len(log) - 1
 		if candidate_available and log_up_to_date:
-			print(str(my_id) + " voted for " + str(candidate_id) + " in term " + str(current_term))
+			#print(str(my_id) + " voted for " + str(candidate_id) + " in term " + str(current_term))
 			# So we don't start another election immediately after voting for
 			# someone
 			last_heartbeat_to_me = time.time()
@@ -248,6 +253,8 @@ def send_vote_response(vote_results, destination):
 		'vote_granted': vote_results[1]
 	}
 	sock.send(json.dumps(req))
+	# Give a little time for the election to happen
+	last_heartbeat_to_me = time.time() + 2
 
 # Recieves a vote for this election
 def recieve_vote_response(term, voted_for_me):
@@ -258,7 +265,7 @@ def recieve_vote_response(term, voted_for_me):
 		if voted_for_me:
 			votes_for_me += 1
 
-			print(str(my_id) + " got " + str(votes_for_me) + " votes in term " + str(current_term))
+			#print(str(my_id) + " got " + str(votes_for_me) + " votes in term " + str(current_term))
 
 		votes_needed = ((len(replica_ids) + 1) / 2) + 1
 		# If you have enough votes, seize power
@@ -270,14 +277,13 @@ def recieve_vote_response(term, voted_for_me):
 			next_index = [len(log)] * len(replica_ids)
 			last_match = [0] * len(replica_ids)
 
-
 			send_heartbeat()
 
 # Finds the highest value the majority of the replicas
 # are willing to commit to
 def highest_agreed_match_index():
 	follower_index = 0
-	match_index = 0
+	match_index = -1
 	while follower_index < len(replica_ids):
 		test_val = last_match[follower_index]
 		higher_or_equal_count = 0
@@ -313,7 +319,6 @@ while True:
 	# Leader general responsibilities
 	if is_leader:
 
-
 		follower_index = 0
 		while follower_index < len(replica_ids):
 			replica_id = replica_ids[follower_index]
@@ -325,14 +330,16 @@ while True:
 			next_index_for_follower = next_index[follower_index]
 
 			#Sends logs to followers if necesary
-			if last_log_index >= next_index_for_follower and time_since_in_ms > time_out_threshold:
-				# Send one log at a time
-				entries = log[next_index_for_follower: next_index_for_follower + 1]
+			if last_log_index >= next_index_for_follower and time_since_in_ms > 1:
+				entries = log[next_index_for_follower: ]
 				slim_entries = []
 				# We don't need the "Confirmed" Flag on follower machines
 				for entry in entries:
 					slim_entry = [entry[0], entry[1], entry[2]]
 					slim_entries.append(slim_entry)
+
+				if len(slim_entries) == 0:
+					print "HEARTBEAT"
 				send_append_entries(slim_entries, replica_id)
 				last_heartbeat[follower_index] = time.time()
 			else:
@@ -359,7 +366,7 @@ while True:
 	else:
 		# If this follower is behind the times,
 		# Apply the next log item to the state machine
-		if commit_index > last_applied:
+		while commit_index > last_applied:
 			last_applied += 1
 			entry = log[last_applied]
 			key = entry[1]
@@ -371,10 +378,10 @@ while True:
 
 		# If you are a follower, wait 150-300ms before starting
 		# elections
-		election_modifier = random.randint(30,130)
+		election_modifier = random.randint(100,200)
 
 
-		if election_threshold + election_modifier < time_since_in_ms:
+		if time_out_threshold + election_modifier < time_since_in_ms:
 			start_election()
 
 	ready = select.select([sock], [], [], 0.1)[0]
@@ -417,13 +424,15 @@ while True:
 					'type': 'redirect',
 					'MID': msg['MID'],
 					}
-				print("Redirect to " + str(voted_for))
 				sock.send(json.dumps(new_msg))
 
 			else:
 				if 'get' in msg['type']:
+
 					key = msg['key']
-					val = state_machine[key]
+					val = ""
+					if key in state_machine.keys():
+						val = state_machine[key]
 					ok_msg = {
 						'src': my_id,
 						'dst': msg['src'],
