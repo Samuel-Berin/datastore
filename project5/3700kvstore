@@ -19,6 +19,7 @@ last_heartbeat = [time.time()] * len(replica_ids)
 last_heartbeat_to_me = time.time()
 
 
+
 # The current term
 current_term = 0
 # Who you are voting for
@@ -41,6 +42,7 @@ last_applied = 0
 
 #timeout time
 time_out_threshold = 100
+election_threshold = 4 * time_out_threshold
 
 # True if you are currently the leader
 is_leader = False
@@ -79,20 +81,23 @@ def send_append_entries(entries, dest):
 def recieve_append_entries(leader_term, leader_id, prev_log_index, prev_log_term, entries_to_add, leader_commit):
 	global log, commit_index, voted_for, current_term
 
-	# Remember who the leader is
-	voted_for = leader_id
-
 
 	# The leader is behind our term
 	if current_term > leader_term:
 		return [current_term, False, -1]
+
+	# Remember who the leader is
+	voted_for = leader_id
+	is_leader = False
+
+
 
 
 	# The log is empty
 	# So take entries as the log
 	# If entries is empty, this preserves
 	# the status quo
-	if prev_log_index == -1:
+	if prev_log_index <= -1:
 		print("full log replace")
 		log = entries
 		return [current_term, True, len(log)]
@@ -131,7 +136,7 @@ def recieve_append_response(term, success, nextIndex, src_id):
 	# and relinquish leadership and do nothing more
 	if term > current_term:
 		current_term = resp[0]
-		voted_for = None
+		voted_for = src_id
 		is_leader = False
 		return
 
@@ -182,6 +187,7 @@ def start_election():
 # Sends a request to all other machines to vote
 # for this machine for leader
 def send_vote_request():
+	global last_heartbeat
 	last_log_index = len(log) - 1
 	last_log_term = None
 	if last_log_index is not -1:
@@ -198,21 +204,29 @@ def send_vote_request():
 		'last_log_term': last_log_term
 	}
 	sock.send(json.dumps(req))
+	last_heartbeat = [time.time()] * len(replica_ids)
 
 
 # Handles recieving a vote for a new leader
 def recieve_vote_request(candidate_term, candidate_id, last_log_index, last_log_term):
 	global voted_for, current_term, last_heartbeat_to_me
 
+	if is_leader:
+		return [current_term, False]
+
 	if candidate_term < current_term:
 		return [current_term, False]
+
 	else:
-		current_term = candidate_term
-		print(str(my_id) + " Recieved request to vote for " + str(candidate_id) + " in term " + str(current_term))
+
+		if candidate_term > current_term:
+			current_term = candidate_term
+			voted_for = candidate_id
+
+		print(str(my_id) + " Recieved request to vote for " + str(candidate_id) + " in term " + str(current_term) + ", leader: " + str(voted_for))
 		candidate_available = voted_for == None or voted_for == candidate_id
 		log_up_to_date = last_log_index >= len(log) - 1
 		if candidate_available and log_up_to_date:
-			voted_for = candidate_id
 			print(str(my_id) + " voted for " + str(candidate_id) + " in term " + str(current_term))
 			# So we don't start another election immediately after voting for
 			# someone
@@ -244,7 +258,7 @@ def recieve_vote_response(term, voted_for_me):
 		if voted_for_me:
 			votes_for_me += 1
 
-		print(str(my_id) + " got " + str(votes_for_me) + " votes")
+			print(str(my_id) + " got " + str(votes_for_me) + " votes in term " + str(current_term))
 
 		votes_needed = ((len(replica_ids) + 1) / 2) + 1
 		# If you have enough votes, seize power
@@ -357,7 +371,10 @@ while True:
 
 		# If you are a follower, wait 150-300ms before starting
 		# elections
-		if time_out_threshold < time_since_in_ms:
+		election_modifier = random.randint(30,130)
+
+
+		if election_threshold + election_modifier < time_since_in_ms:
 			start_election()
 
 	ready = select.select([sock], [], [], 0.1)[0]
@@ -439,9 +456,11 @@ while True:
 			last_log_term = msg['last_log_term']
 			resp = recieve_vote_request(candidate_term, candidate_id, last_log_index, last_log_term)
 			send_vote_response(resp, candidate_id)
+			last_heartbeat_to_me = time.time()
 
 		# You just got a vote response, possibly voting for you!
 		if msg['type'] == 'election_vote':
 			term = msg['term']
 			voted_for_me = msg['vote_granted']
 			recieve_vote_response(term, voted_for_me)
+			last_heartbeat_to_me = time.time()
