@@ -38,6 +38,10 @@ state_machine = {}
 commit_index = 0
 last_applied = 0
 
+
+#timeout time
+time_out_threshold = 100
+
 # True if you are currently the leader
 is_leader = False
 
@@ -287,7 +291,6 @@ def send_put_confirmation(dest, mid):
 		'MID': mid,
 		}
 	sock.send(json.dumps(ok_msg))
-	print("Confirming put: " + str(mid))
 
 # Main loop
 while True:
@@ -308,7 +311,7 @@ while True:
 			next_index_for_follower = next_index[follower_index]
 
 			#Sends logs to followers if necesary
-			if last_log_index >= next_index_for_follower and time_since_in_ms > 100:
+			if last_log_index >= next_index_for_follower and time_since_in_ms > time_out_threshold:
 				# Send one log at a time
 				entries = log[next_index_for_follower: next_index_for_follower + 1]
 				slim_entries = []
@@ -320,7 +323,7 @@ while True:
 				last_heartbeat[follower_index] = time.time()
 			else:
 				# Sends heartbeat if we need it
-				if time_since_in_ms > 100:
+				if time_since_in_ms > time_out_threshold:
 					send_append_entries([], replica_id)
 					last_heartbeat[follower_index] = time.time()
 
@@ -352,11 +355,9 @@ while True:
 		time_since_last_heartbeat = time.time() - last_heartbeat_to_me
 		time_since_in_ms = time_since_last_heartbeat * 1000
 
-		threshold = random.randint(150, 300)
-
 		# If you are a follower, wait 150-300ms before starting
 		# elections
-		if threshold < time_since_in_ms:
+		if time_out_threshold < time_since_in_ms:
 			start_election()
 
 	ready = select.select([sock], [], [], 0.1)[0]
