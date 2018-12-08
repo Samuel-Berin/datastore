@@ -390,7 +390,9 @@ while True:
 		# Increments the commit index if the majority of replicas agree
 		highest_match = highest_agreed_match_index()
 
-		if highest_match > commit_index and log[highest_match][0] is current_term:
+
+
+		if highest_match > commit_index and highest_match < len(log) and log[highest_match][0] is current_term:
 
 			#Confirm all messages between last commit index and this one
 			to_confirm = log[commit_index + 1: highest_match + 1]
