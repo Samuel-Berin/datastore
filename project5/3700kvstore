@@ -104,8 +104,6 @@ def recieve_append_entries(leader_term, leader_id, prev_log_index, prev_log_term
 	# the status quo
 	if prev_log_index <= -1:
 
-		if log != []:
-			print("full log replace")
 		log = entries
 		return [current_term, True, len(log)]
 
@@ -113,14 +111,12 @@ def recieve_append_entries(leader_term, leader_id, prev_log_index, prev_log_term
 	# If the log is shorter than the leader thought
 	# request all of the logs we don't have
 	if len(log) <= prev_log_index:
-		print("log too short")
 		return [current_term, False, len(log)]
 
 
 	# If the last term we expected to match doesn't,
 	# go back and ask for more logs
 	if log[prev_log_index] != prev_log_term:
-		print("non match")
 		return [current_term, False, prev_log_index - 1]
 
 
@@ -203,7 +199,7 @@ def start_election():
 	election_season = True
 	is_leader = False
 	current_term += 1
-	print (str(my_id) + " starting election for term " + str(current_term))
+	#print (str(my_id) + " starting election for term " + str(current_term))
 	voted_for = my_id
 	votes_for_me = 1
 	last_heartbeat_to_me = time.time()
@@ -301,7 +297,7 @@ def recieve_vote_response(term, voted_for_me):
 			last_heard = [time.time()] * len(replica_ids)
 
 
-			print("Election is over: " + str(my_id) + " is leader in term " + str(current_term))
+			#print("Election is over: " + str(my_id) + " is leader in term " + str(current_term))
 			next_index = [len(log)] * len(replica_ids)
 			last_match = [commit_index] * len(replica_ids)
 
@@ -363,7 +359,6 @@ while True:
 
 		#Reliquish leadership
 		if time_since_last_quorum() > time_out_threshold:
-			print("Giving up power")
 			start_election()
 
 
