@@ -134,7 +134,7 @@ def recieve_append_entries(leader_term, leader_id, prev_log_index, prev_log_term
 
 # Handle the response from an append
 def recieve_append_response(term, success, nextIndex, src_id):
-	global current_term, voted_for, is_leader, last_heard
+	global current_term, voted_for, is_leader, last_heard, next_index, last_match
 
 	# If my term is behind the response term, update mine
 	# and relinquish leadership and do nothing more
@@ -379,6 +379,8 @@ while True:
 
 				if len(entries) < 30:
 					send_append_entries(entries, replica_id)
+				else:
+					send_append_entries(entries[0:10], replica_id)
 				last_heartbeat[follower_index] = time.time()
 			else:
 				# Sends heartbeat if we need it
@@ -391,8 +393,11 @@ while True:
 		highest_match = highest_agreed_match_index()
 
 
+		if highest_match >= len(log):
+			print last_match
+			print len(log)
 
-		if highest_match > commit_index and highest_match < len(log) and log[highest_match][0] is current_term:
+		if highest_match > commit_index and log[highest_match][0] is current_term:
 
 			#Confirm all messages between last commit index and this one
 			to_confirm = log[commit_index + 1: highest_match + 1]
