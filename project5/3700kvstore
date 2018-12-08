@@ -47,7 +47,7 @@ last_applied = 0
 
 
 #timeout time
-time_out_threshold = 300
+time_out_threshold = 700
 
 
 # True if you are currently the leader
@@ -129,7 +129,6 @@ def recieve_append_entries(leader_term, leader_id, prev_log_index, prev_log_term
 		commit_index =  min(leader_commit, len(log) - 1)
 
 
-
 	return [current_term, True, len(log)]
 
 # Handle the response from an append
@@ -158,7 +157,6 @@ def recieve_append_response(term, success, nextIndex, src_id):
 	# let's try again earlier
 	else:
 		next_index[replica_index] = nextIndex
-
 
 # Sends a response indicating whether the
 # append entries was a success
@@ -353,6 +351,8 @@ while True:
 	# Leader general responsibilities
 	if is_leader:
 
+
+
 		#print("C: " + str(last_match))
 		#print("N: " + str(next_index) )
 		#print("L: " + str(len(log)))
@@ -394,8 +394,7 @@ while True:
 
 
 		if highest_match >= len(log):
-			print last_match
-			print len(log)
+			print("ERROR")
 
 		if highest_match > commit_index and log[highest_match][0] is current_term:
 
@@ -410,6 +409,7 @@ while True:
 
 	else:
 
+		#print("F: " + str(len(log)))
 
 	# Get rid of the temps if the election's not ongoing
 
