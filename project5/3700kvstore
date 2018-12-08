@@ -85,7 +85,7 @@ def send_append_entries(entries, dest):
 
 
 def recieve_append_entries(leader_term, leader_id, prev_log_index, prev_log_term, entries_to_add, leader_commit):
-	global log, commit_index, voted_for, current_term, election_season
+	global log, commit_index, voted_for, current_term, election_season, last_heartbeat_to_me
 
 
 	# The leader is behind our term
@@ -189,7 +189,7 @@ def start_election():
 	for temp in election_temp_storage:
 		temp['type'] = 'redirect'
 		# Take a guess
-		temp['leader'] = random.choice(replica_ids)
+		temp['leader'] = 'FFFF'
 		sock.send(json.dumps(temp))
 	election_temp_storage = []
 
@@ -197,7 +197,7 @@ def start_election():
 	election_season = True
 	is_leader = False
 	current_term += 1
-	#print (str(my_id) + " starting election for term " + str(current_term))
+	print (str(my_id) + " starting election for term " + str(current_term))
 	voted_for = my_id
 	votes_for_me = 1
 	last_heartbeat_to_me = time.time()
@@ -228,6 +228,8 @@ def send_vote_request():
 def recieve_vote_request(candidate_term, candidate_id, last_log_index, last_log_term):
 	global voted_for, current_term, last_heartbeat_to_me, election_season
 
+	last_heartbeat_to_me = time.time()
+
 	if is_leader:
 		return [current_term, False]
 
@@ -248,7 +250,6 @@ def recieve_vote_request(candidate_term, candidate_id, last_log_index, last_log_
 			#print(str(my_id) + " voted for " + str(candidate_id) + " in term " + str(current_term))
 			# So we don't start another election immediately after voting for
 			# someone
-			last_heartbeat_to_me = time.time()
 			return [current_term, True]
 		else:
 			return [current_term, False]
@@ -257,6 +258,7 @@ def recieve_vote_request(candidate_term, candidate_id, last_log_index, last_log_
 # Sends a response back to the person we've
 # recieved a vote request from
 def send_vote_response(vote_results, destination):
+	global last_heartbeat_to_me
 	req = {
 		'src': my_id,
 		'dst': destination,
@@ -278,7 +280,7 @@ def recieve_vote_response(term, voted_for_me):
 		if voted_for_me:
 			votes_for_me += 1
 
-			#print(str(my_id) + " got " + str(votes_for_me) + " votes in term " + str(current_term))
+			print(str(my_id) + " got " + str(votes_for_me) + " votes in term " + str(current_term))
 
 		votes_needed = ((len(replica_ids) + 1) / 2) + 1
 		# If you have enough votes, seize power
@@ -295,7 +297,7 @@ def recieve_vote_response(term, voted_for_me):
 			last_heard = [time.time()] * len(replica_ids)
 
 
-			#print("Election is over: " + str(my_id) + " is leader in term " + str(current_term))
+			print("Election is over: " + str(my_id) + " is leader in term " + str(current_term))
 			next_index = [len(log)] * len(replica_ids)
 			last_match = [commit_index] * len(replica_ids)
 
@@ -351,16 +353,9 @@ while True:
 	# Leader general responsibilities
 	if is_leader:
 
-
-
 		#print("C: " + str(last_match))
 		#print("N: " + str(next_index) )
 		#print("L: " + str(len(log)))
-
-		#Reliquish leadership
-		if time_since_last_quorum() > time_out_threshold:
-			start_election()
-
 
 
 		follower_index = 0
@@ -433,12 +428,13 @@ while True:
 		time_since_last_heartbeat = time.time() - last_heartbeat_to_me
 		time_since_in_ms = time_since_last_heartbeat * 1000
 
-		# If you are a follower, wait 150-300ms before starting
+		# If you are a follower, wait ms before starting
 		# elections
-		election_modifier = random.randint(100,200)
+		election_modifier = random.randint(100,600)
 
 
 		if time_out_threshold + election_modifier < time_since_in_ms:
+			print time_since_in_ms
 			start_election()
 
 	ready = select.select([sock], [], [], 0.1)[0]
@@ -450,6 +446,7 @@ while True:
 		msg = json.loads(msg_raw)
 
 		if 'append' in msg['type']:
+			last_heartbeat_to_me = time.time()
 			leader_term = msg['term']
 			leader_id = msg['leader']
 			prev_log_index = msg['prev_log_index']
@@ -459,7 +456,6 @@ while True:
 			dest = msg['src']
 			response = recieve_append_entries(leader_term, leader_id, prev_log_index, prev_log_term, entries, leader_commit)
 			send_append_entries_response(response, dest)
-			last_heartbeat_to_me = time.time()
 
 		if 'app_response' in msg['type']:
 			term = msg['term']
